@@ -87,11 +87,44 @@ Tested: opencode 1.18.27 on a Mac Pro 2013 (Xeon E5-1620 v2, no AVX2), macOS
 12.7.6, Bun 1.4.0 and 1.4.1. The first run is slow (~4 min: cold transpile of
 1318 modules with no bytecode cache); subsequent runs start in about 2s.
 
+## Two things the extraction has to fix
+
+**Virtual paths.** The bundle refers to its own files through Bun's virtual
+filesystem prefix (`/$bunfs/root/`), so `--rewrite-prefix` points those at the
+real install directory.
+
+**Native-asset imports.** Bun's bundler emits native assets as
+`import("<chunk>.js", { with: { type: "file" } })`, where the chunk is a shim
+whose default export is the asset's path. Inside a compiled executable the
+standalone graph resolves that attribute to the asset; running the same chunks
+on a plain Bun, `type: "file"` instead returns the path of the *chunk*, so the
+consumer `dlopen()`s a `.js` file:
+
+```
+Failed to initialize OpenTUI render library: … tried:
+'…/app/chunk-zttpctyt.js' (not a mach-o file)
+```
+
+The extractor drops the attribute on `.js` specifiers only, so the chunk
+evaluates as a module and its default export gives the real `.dylib` path.
+Without this the TUI cannot start (`--version` still works, which makes it easy
+to think the install is fine).
+
+## Gotcha: a stale Homebrew install shadows the launcher
+
+`~/.opencode/bin` is added to `PATH` by the official installer's shell snippet,
+which only runs for interactive shells. If you also have an old
+`brew install opencode`, then in scripts, `ssh` one-liners and other
+non-interactive shells `/usr/local/bin/opencode` wins and you get the
+AVX2-requiring binary — an exit-132 SIGILL that looks like this fix failing.
+Check with `command -v opencode` in the same context that failed, and remove
+the Homebrew copy (`brew uninstall opencode`) if you have one.
+
 ## How the extraction works
 
 [`bunfs_extract.py`](bunfs_extract.py) (stdlib-only Python) parses Bun's
-StandaloneModuleGraph out of the executable and rewrites the `/$bunfs/root/`
-virtual paths so the entry point runs from a real directory. It is the same
+StandaloneModuleGraph out of the executable and applies both fixes above. It is
+the same
 tool as in [claude-cli-x86-fix](https://github.com/turinglabsorg/claude-cli-x86-fix),
 where the binary-format details are documented; it works on any
 `bun build --compile` output:

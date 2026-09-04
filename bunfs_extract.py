@@ -30,6 +30,7 @@ Verified against Bun 1.4.x binaries. Stdlib only, no dependencies.
 
 import argparse
 import os
+import re
 import struct
 import sys
 
@@ -38,6 +39,23 @@ OFFSETS_SIZE = 32
 RECORD_SIZE = 52
 BUNFS_PREFIXES = ("/$bunfs/root/", "B:\\~BUN\\root\\", "/$bunfs/")
 ENC_UTF16 = 2
+
+# `import("<chunk>.js", { with: { type: "file" } })` — Bun's bundler emits this
+# for a native asset imported as a file: the chunk is a shim whose default
+# export is the asset's path. Inside a compiled executable the standalone graph
+# resolves the attribute to the asset; run the same chunks on a plain Bun and
+# `type: "file"` instead yields the path of the *chunk*, so the consumer
+# dlopen()s a .js file and fails ("not a mach-o file"). Dropping the attribute
+# makes the chunk evaluate as a module, whose default export is the real path.
+# Only .js specifiers are touched — on a genuine asset the attribute is correct.
+ASSET_IMPORT_RE = re.compile(
+    r"""import\(\s*(["'])([^"']+\.js)\1\s*,\s*\{\s*with\s*:\s*"""
+    r"""\{\s*type\s*:\s*["']file["']\s*\}\s*,?\s*\}\s*\)"""
+)
+
+
+def fix_asset_imports(text):
+    return ASSET_IMPORT_RE.subn(lambda m: f"import({m.group(1)}{m.group(2)}{m.group(1)})", text)
 
 
 def parse_graph(data):
@@ -127,6 +145,7 @@ def main():
         rewrite_new = target.encode() + b"/"
 
     entry_rel = None
+    asset_imports = 0
     for i, r in enumerate(records):
         rel = strip_prefix(r["name"]) or f"unnamed_{i}"
         off, length = r["contents"]
@@ -135,6 +154,14 @@ def main():
             contents = contents.decode("utf-16-le", "replace").encode("utf-8")
         if rewrite_old and not rel.endswith(".node") and rewrite_old in contents:
             contents = contents.replace(rewrite_old, rewrite_new)
+        if rel.endswith(".js"):
+            try:
+                fixed, n = fix_asset_imports(contents.decode())
+            except UnicodeDecodeError:
+                n = 0
+            if n:
+                contents = fixed.encode()
+                asset_imports += n
         dest = os.path.join(args.outdir, rel)
         os.makedirs(os.path.dirname(dest) or args.outdir, exist_ok=True)
         with open(dest, "wb") as f:
@@ -143,6 +170,8 @@ def main():
             entry_rel = rel
 
     print(f"extracted {len(records)} files to {args.outdir}")
+    if asset_imports:
+        print(f"fixed {asset_imports} native-asset import(s)")
     print(f"entry point: {entry_rel}")
 
 
