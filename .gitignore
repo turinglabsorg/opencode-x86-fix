@@ -1,0 +1,6 @@
+out/
+*.tgz
+*.zip
+package/
+__pycache__/
+.DS_Store
