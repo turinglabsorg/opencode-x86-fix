@@ -128,4 +128,4 @@ chmod +x "$BIN_PATH" 2>/dev/null || sudo chmod +x "$BIN_PATH"
 
 echo
 echo "done: $("$BIN_PATH" --version | tail -1)"
-echo "the first run is slow (cold transpile of the bundle); later runs are ~2s"
+echo "the very first run may take a few minutes (cold transpile); then ~1s"

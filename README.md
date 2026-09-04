@@ -84,10 +84,12 @@ Overrides: `OPENCODE_FIX_HOME`, `OPENCODE_FIX_BIN`, `OPENCODE_VERSION`,
 `BUN_VERSION`.
 
 Tested: opencode 1.18.27 on a Mac Pro 2013 (Xeon E5-1620 v2, no AVX2), macOS
-12.7.6, Bun 1.4.0 and 1.4.1. The first run is slow (~4 min: cold transpile of
-1318 modules with no bytecode cache); subsequent runs start in about 2s.
+12.7.6, Bun 1.4.0 and 1.4.1 — TUI renders, `serve` answers HTTP, startup ~1.2s.
+The very first extraction pays a one-off transpile cost of a few minutes; after
+that Bun's transpiler cache makes startup fast even for a fresh extraction of
+the same version.
 
-## Two things the extraction has to fix
+## Three things the extraction has to fix
 
 **Virtual paths.** The bundle refers to its own files through Bun's virtual
 filesystem prefix (`/$bunfs/root/`), so `--rewrite-prefix` points those at the
@@ -109,6 +111,16 @@ The extractor drops the attribute on `.js` specifiers only, so the chunk
 evaluates as a module and its default export gives the real `.dylib` path.
 Without this the TUI cannot start (`--version` still works, which makes it easy
 to think the install is fine).
+
+**Build-time source paths.** opencode injects its TUI worker path as a
+`define`: `OPENCODE_WORKER_PATH = "./src/cli/tui/worker.ts"` — the *source*
+name, while the bundle emits `src/cli/tui/worker.js`. A compiled executable
+resolves that name against its standalone graph; on a real filesystem the `.ts`
+file does not exist, so `new Worker(...)` never starts. The TUI then waits for a
+worker that never comes up and exits on its startup timeout after ~20s, with no
+error printed at all. The extractor rewrites `.ts` specifiers to the absolute
+path of the emitted `.js` twin when one exists (`.d.ts` and unresolvable paths
+are left alone).
 
 ## Gotcha: a stale Homebrew install shadows the launcher
 

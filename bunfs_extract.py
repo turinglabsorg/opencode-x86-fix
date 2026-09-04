@@ -102,6 +102,68 @@ def parse_graph(data):
     return data, records, entry_id
 
 
+TS_SPEC_RE = re.compile(r"""(["'])((?:\.{0,2}/)[A-Za-z0-9_./-]+?)\.ts\1""")
+
+
+def fix_ts_specifiers(outdir, base):
+    """Point build-time-injected .ts source paths at the emitted .js files.
+
+    Bun's `define` bakes source specifiers into the bundle — opencode injects
+    OPENCODE_WORKER_PATH as "./src/cli/tui/worker.ts". Inside a compiled
+    executable the standalone graph resolves that name to the emitted module;
+    on a real filesystem only the transpiled worker.js exists, so the
+    `new Worker(...)` never starts. The TUI then waits for a worker that will
+    never come up and exits on its startup timeout — with no error printed.
+
+    Rewrite such specifiers to the absolute path of the emitted .js file,
+    resolving them both against the referencing file and against the output
+    root (the compiled binary resolved them against the bunfs root, which is
+    not where the referencing chunk necessarily sits).
+    """
+    existing = set()
+    for root, _, names in os.walk(outdir):
+        for n in names:
+            if n.endswith(".js"):
+                rel = os.path.relpath(os.path.join(root, n), outdir)
+                existing.add(rel.replace(os.sep, "/"))
+
+    base = base.rstrip("/")
+    total = 0
+    for root, _, names in os.walk(outdir):
+        for n in names:
+            if not n.endswith(".js"):
+                continue
+            path = os.path.join(root, n)
+            try:
+                text = open(path, encoding="utf-8").read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            here = os.path.dirname(os.path.relpath(path, outdir)).replace(os.sep, "/")
+            hits = []
+
+            def repl(m):
+                quote, spec = m.group(1), m.group(2)
+                if spec.endswith(".d"):  # .d.ts type declarations
+                    return m.group(0)
+                cands = []
+                if here:
+                    cands.append(os.path.normpath(f"{here}/{spec}"))
+                cands.append(os.path.normpath(spec))
+                for cand in cands:
+                    rel = cand.replace(os.sep, "/").lstrip("./")
+                    if f"{rel}.js" in existing:
+                        hits.append(rel)
+                        return f"{quote}{base}/{rel}.js{quote}"
+                return m.group(0)
+
+            new_text = TS_SPEC_RE.sub(repl, text)
+            if hits:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+                total += len(hits)
+    return total
+
+
 def strip_prefix(name):
     for prefix in BUNFS_PREFIXES:
         if name.startswith(prefix):
@@ -168,6 +230,11 @@ def main():
             f.write(contents)
         if i == entry_id:
             entry_rel = rel
+
+    if args.rewrite_prefix:
+        n_ts = fix_ts_specifiers(args.outdir, os.path.abspath(args.rewrite_prefix))
+        if n_ts:
+            print(f"fixed {n_ts} build-time .ts source path(s)")
 
     print(f"extracted {len(records)} files to {args.outdir}")
     if asset_imports:
